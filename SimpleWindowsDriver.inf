@@ -1,0 +1,62 @@
+;
+; SimpleWindowsDriver.inf
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System ; TODO: specify appropriate Class
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318} ; TODO: specify appropriate ClassGuid
+Provider    = %ManufacturerName%
+CatalogFile = SimpleWindowsDriver.cat
+DriverVer   = ; TODO: set DriverVer in stampinf property pages
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+SimpleWindowsDriver.sys = 1,,
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName% = Standard,NT$ARCH$.10.0...16299 ; %13% support introduced in build 16299
+
+[Standard.NT$ARCH$.10.0...16299]
+%SimpleWindowsDriver.DeviceDesc% = SimpleWindowsDriver_Device, Root\SimpleWindowsDriver ; TODO: edit hw-id
+
+[SimpleWindowsDriver_Device.NT]
+CopyFiles = File_Copy
+
+[File_Copy]
+SimpleWindowsDriver.sys
+
+;-------------- Service installation
+[SimpleWindowsDriver_Device.NT.Services]
+AddService = SimpleWindowsDriver,%SPSVCINST_ASSOCSERVICE%, SimpleWindowsDriver_Service_Inst
+
+; -------------- SimpleWindowsDriver driver install sections
+[SimpleWindowsDriver_Service_Inst]
+DisplayName    = %SimpleWindowsDriver.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\SimpleWindowsDriver.sys
+
+[SimpleWindowsDriver_Device.NT.Wdf]
+KmdfService = SimpleWindowsDriver, SimpleWindowsDriver_wdfsect
+
+[SimpleWindowsDriver_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE = 0x00000002
+ManufacturerName = "<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+DiskName = "SimpleWindowsDriver Installation Disk"
+SimpleWindowsDriver.DeviceDesc = "SimpleWindowsDriver Device"
+SimpleWindowsDriver.SVCDESC = "SimpleWindowsDriver Service"
