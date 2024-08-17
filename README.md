@@ -20,7 +20,7 @@ This repository contains the source code for `MyDriver`, a Windows kernel-mode d
 
 ## Introduction
 
-`MyDriver` is a Windows kernel-mode driver example that demonstrates several basic features commonly used in drivers. It includes device creation, IOCTL handling, timer usage, work item implementation, and basic synchronization.
+`MyDriver` is a Windows kernel-mode driver example that demonstrates several basic features commonly used in drivers. It includes device creation, IOCTL handling, timer usage, work item implementation, and basic synchronization. This driver is a simple example of how to handle IOCTL commands, manage shared data in a thread-safe manner, and perform periodic tasks within a Windows kernel-mode environment. It serves as a foundation for more complex drivers that might involve additional hardware interaction or more sophisticated data processing.
 
 ## Prerequisites
 
