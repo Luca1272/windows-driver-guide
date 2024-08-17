@@ -6,7 +6,7 @@
 #define IOCTL_MYDRIVER_READ    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)
 #define IOCTL_MYDRIVER_WRITE   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
-// TODO: Remove or disable these in production builds
+// Debug print macro, disabled in release builds
 #if DBG
 #define MYDRIVER_KDPRINT(_x_) \
                 DbgPrint("MYDRIVER.SYS: ");\
@@ -15,13 +15,9 @@
 #define MYDRIVER_KDPRINT(_x_)
 #endif
 
-// Global variable
+// Global variables
 static LONG g_SharedCounter = 0;
-
-// Spin lock for synchronization
 static KSPIN_LOCK g_SpinLock;
-
-// Timer object
 static KTIMER g_Timer;
 static KDPC g_TimerDpc;
 
@@ -52,7 +48,7 @@ DriverEntry(
 
     MYDRIVER_KDPRINT(("DriverEntry Called\n"));
 
-    // Initialize the spin lock
+    // Initialize the spin lock for synchronizing access to g_SharedCounter
     KeInitializeSpinLock(&g_SpinLock);
 
     // Initialize the Unicode string for the device name
@@ -98,7 +94,7 @@ DriverEntry(
     KeInitializeTimer(&g_Timer);
     KeInitializeDpc(&g_TimerDpc, TimerDpcRoutine, deviceObject);
     LARGE_INTEGER dueTime;
-    dueTime.QuadPart = -10000000LL; // 1 second
+    dueTime.QuadPart = -10000000LL; // 1 second (negative for relative time)
     KeSetTimerEx(&g_Timer, dueTime, 1000, &g_TimerDpc); // 1 second periodic
 
     return STATUS_SUCCESS;
@@ -113,7 +109,7 @@ MyDriverCreateClose(
 {
     UNREFERENCED_PARAMETER(DeviceObject);
 
-    // This routine should only be called at PASSIVE_LEVEL
+    // Ensure this function runs at PASSIVE_LEVEL
     PAGED_CODE();
 
     MYDRIVER_KDPRINT(("Create or Close request\n"));
@@ -136,10 +132,11 @@ MyDriverUnload(
 
     MYDRIVER_KDPRINT(("Unload Called\n"));
 
-    // Cancel the timer
+    // Cancel the timer to prevent new DPCs from being queued
     KeCancelTimer(&g_Timer);
     
     // Wait for any pending DPCs to complete
+    // This ensures all DPCs finish before we continue unloading
     KeFlushQueuedDpcs();
 
     // Delete the symbolic link
@@ -148,6 +145,7 @@ MyDriverUnload(
 
     if (deviceObject != NULL)
     {
+        // Delete the device object after all cleanup is done
         IoDeleteDevice(deviceObject);
     }
 }
@@ -166,7 +164,7 @@ MyDriverDeviceControl(
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
-    // This routine should only be called at PASSIVE_LEVEL
+    // Ensure this function runs at PASSIVE_LEVEL
     PAGED_CODE();
 
     irpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -188,6 +186,7 @@ MyDriverDeviceControl(
             break;
         }
         {
+            // Use a spin lock to synchronize access to g_SharedCounter
             KLOCK_QUEUE_HANDLE lockHandle;
             KeAcquireInStackQueuedSpinLock(&g_SpinLock, &lockHandle);
             *(PLONG)outBuf = g_SharedCounter;
@@ -203,6 +202,7 @@ MyDriverDeviceControl(
             break;
         }
         {
+            // Use a spin lock to synchronize access to g_SharedCounter
             KLOCK_QUEUE_HANDLE lockHandle;
             KeAcquireInStackQueuedSpinLock(&g_SpinLock, &lockHandle);
             g_SharedCounter = *(PLONG)inBuf;
@@ -236,6 +236,7 @@ TimerDpcRoutine(
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    // This routine runs at DISPATCH_LEVEL
     PDEVICE_OBJECT deviceObject = (PDEVICE_OBJECT)DeferredContext;
     if (deviceObject == NULL) {
         MYDRIVER_KDPRINT(("ERROR: Invalid device object in TimerDpcRoutine\n"));
@@ -244,7 +245,7 @@ TimerDpcRoutine(
 
     MYDRIVER_KDPRINT(("Timer DPC Called\n"));
 
-    // Increment the shared counter
+    // Increment the shared counter using an interlocked operation
     InterlockedIncrement(&g_SharedCounter);
 
     // Queue a work item
@@ -268,13 +269,16 @@ WorkItemRoutine(
 {
     UNREFERENCED_PARAMETER(DeviceObject);
 
+    // This routine runs at DISPATCH_LEVEL
     MYDRIVER_KDPRINT(("Work Item Routine Called\n"));
 
     // Perform some deferred processing here
-    // NOTE: Ensure any added processing is safe to run at DISPATCH_LEVEL or lower
-    // Avoid operations that require PASSIVE_LEVEL
+    // NOTE: This routine runs at DISPATCH_LEVEL, so avoid operations that require PASSIVE_LEVEL
+    // For example, you can safely access the shared counter:
+    LONG currentValue = InterlockedAdd(&g_SharedCounter, 0);
+    MYDRIVER_KDPRINT(("Current counter value: %d\n", currentValue));
 
-    // Free the work item
+    // Free the work item to prevent memory leaks
     if (Context != NULL)
     {
         IoFreeWorkItem((PIO_WORKITEM)Context);
