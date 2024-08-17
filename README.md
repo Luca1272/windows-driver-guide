@@ -1,117 +1,135 @@
-# IN DEVELOPMENT MIGHT NOT WORK AS INTENDED
-
-
-
 # MyDriver
 
-This repository contains the source code for `MyDriver`, a Windows kernel-mode driver. This guide provides detailed instructions on how to compile, test, and run your own drivers in test mode, both with and without Visual Studio.
+This repository contains the source code for `MyDriver`, a Windows kernel-mode driver. This guide provides detailed instructions on how to compile, test, and run your own drivers, including information on driver signing for both test and production environments.
 
 ## Table of Contents
-- [Introduction](#introduction)
-- [Prerequisites](#prerequisites)
-- [Compiling the Driver](#compiling-the-driver)
-  - [Using Visual Studio](#using-visual-studio)
-  - [Without Visual Studio](#without-visual-studio)
-- [Running the Driver in Test Mode](#running-the-driver-in-test-mode)
-- [Uninstalling the Driver](#uninstalling-the-driver)
-- [Licenses](#licenses)
+* Introduction
+* Prerequisites
+* Driver Features
+* Compiling the Driver
+   * Using Visual Studio
+   * Without Visual Studio
+* Signing the Driver
+   * Test Signing
+   * Production Signing
+* Running the Driver
+   * In Test Mode
+   * In Production Mode
+* Uninstalling the Driver
+* Additional Resources
 
 ## Introduction
 
-`MyDriver` is a simple Windows kernel-mode driver example. The driver demonstrates basic driver operations, including creating and closing a device, handling device control requests, and unloading the driver.
+`MyDriver` is a Windows kernel-mode driver example that demonstrates several basic features commonly used in drivers. It includes device creation, IOCTL handling, timer usage, work item implementation, and basic synchronization.
 
 ## Prerequisites
 
 To compile and run this driver, you need the following tools and dependencies:
 
-- Windows operating system
-- Windows Driver Kit (WDK)
-- Visual Studio (optional but recommended for ease of use)
-- Administrator privileges to install and run the driver
+* Windows 10 or later operating system
+* Windows Driver Kit (WDK) 10 or later
+* Visual Studio 2019 or later (optional but recommended)
+* Windows SDK
+* Administrator privileges to install and run the driver
+
+## Driver Features
+
+The driver demonstrates the following features:
+
+1. Device creation and symbolic link creation
+2. Handling of create/close requests
+3. IOCTL processing for read and write operations
+4. Use of a global variable shared across the driver
+5. Basic synchronization using a spin lock
+6. Timer and DPC (Deferred Procedure Call) usage
+7. Work item for deferred processing
 
 ## Compiling the Driver
 
 ### Using Visual Studio
 
-1. **Install Visual Studio**:
-   - Download and install Visual Studio from the [official website](https://visualstudio.microsoft.com/).
-
-2. **Install the Windows Driver Kit (WDK)**:
-   - Download and install the WDK that matches your version of Visual Studio from the [official Microsoft website](https://docs.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk).
-
-3. **Open the Driver Project**:
-   - Open Visual Studio and create a new project using the "Kernel Mode Driver, Empty (KMDF)" template.
-   - Add the `driver.c` file to the project.
-
-4. **Configure Project Properties**:
+1. Install Visual Studio and the WDK.
+2. Open Visual Studio and create a new project using the "Kernel Mode Driver, Empty (KMDF)" template.
+3. Add the `driver.c` file to the project.
+4. Configure project properties:
    - Set the target OS version and platform.
-   - Configure the signing properties to use a test certificate or disable signing for testing purposes.
-
-5. **Build the Driver**:
-   - Click on "Build" > "Build Solution" to compile the driver.
+   - Configure the signing properties (see Signing the Driver section).
+5. Build the solution.
 
 ### Without Visual Studio
 
-1. **Install the Windows Driver Kit (WDK)**:
-   - Download and install the WDK from the [official Microsoft website](https://docs.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk).
+1. Install the WDK.
+2. Open the "x64 Native Tools Command Prompt for VS".
+3. Navigate to the directory containing `driver.c`.
+4. Compile using `msbuild`:
+msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64
 
-2. **Open a WDK Command Prompt**:
-   - Open the "x64 Native Tools Command Prompt for VS" (or the appropriate one for your architecture).
+## Signing the Driver
 
-3. **Compile the Driver**:
-   - Navigate to the directory containing `driver.c`.
-   - Use the `msbuild` command to compile the driver:
-     ```sh
-     msbuild driver.vcxproj /p:Configuration=Release
-     ```
+### Test Signing
 
-## Running the Driver in Test Mode
+1. Generate a test certificate:
+makecert -r -pe -ss PrivateCertStore -n CN=MyDriverTestCert MyDriverTestCert.cer
 
-1. **Enable Test Signing Mode**:
-   - Open a Command Prompt with administrative privileges.
-   - Enable test signing mode by running:
-     ```sh
-     bcdedit /set testsigning on
-     ```
-   - Restart your computer to apply the changes.
+2. Sign the driver:
+signtool sign /v /s PrivateCertStore /n MyDriverTestCert /t http://timestamp.digicert.com MyDriver.sys
 
-2. **Install the Driver**:
-   - Use the `sc` command to create a service for your driver:
-     ```sh
-     sc create MyDriver type= kernel binPath= C:\path\to\MyDriver.sys
-     ```
-   - Start the driver service:
-     ```sh
-     sc start MyDriver
-     ```
+### Production Signing
 
-3. **Verify Driver Installation**:
-   - Open the Device Manager and verify that the driver is loaded.
+For production signing, you need an EV Code Signing Certificate from a trusted Certificate Authority.
+
+1. Obtain an EV Code Signing Certificate from a trusted CA.
+2. Install the certificate on your development machine.
+3. Sign the driver using the production certificate:
+signtool sign /v /fd sha256 /s MY /n "Your Company Name" /t http://timestamp.digicert.com MyDriver.sys
+
+4. Submit the driver to the Windows Hardware Developer Center for WHQL certification.
+
+## Running the Driver
+
+### In Test Mode
+
+1. Enable test signing mode:
+bcdedit /set testsigning on
+2. Restart your computer.
+3. Install the driver:
+sc create MyDriver type= kernel binPath= C:\path\to\MyDriver.sys
+sc start MyDriver
+
+### In Production Mode
+
+1. Ensure you have a WHQL certified driver.
+2. Install the driver using the same method as in test mode, but without enabling test signing.
 
 ## Uninstalling the Driver
 
-1. **Stop the Driver Service**:
-   - Use the `sc` command to stop the driver service:
-     ```sh
-     sc stop MyDriver
-     ```
-
-2. **Delete the Driver Service**:
-   - Use the `sc` command to delete the service:
-     ```sh
-     sc delete MyDriver
-     ```
- 
-3. **Disable Test Signing Mode**:
-   - Disable test signing mode by running:
-     ```sh
-     bcdedit /set testsigning off
-     ```
-   - Restart your computer to apply the changes.
+1. Stop the driver:
+sc stop MyDriver
+2. Delete the driver service:
+sc delete MyDriver
+3. If in test mode, disable it:
+bcdedit /set testsigning off
 
 ## Additional Resources
 
-- [Microsoft Docs: Windows Driver Kit](https://docs.microsoft.com/en-us/windows-hardware/drivers/)
-- [Visual Studio Documentation](https://docs.microsoft.com/en-us/visualstudio/)
+* [Microsoft Docs: Windows Driver Kit](https://docs.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk)
+* [Microsoft Docs: Driver Signing](https://docs.microsoft.com/en-us/windows-hardware/drivers/install/driver-signing)
+* [Windows Hardware Dev Center Dashboard](https://partner.microsoft.com/en-us/dashboard/hardware/)
 
 For any questions or issues, please open an issue on the GitHub repository.
+This updated README includes:
+
+A new section on Driver Features, explaining what the expanded driver demonstrates.
+More detailed information on driver signing, including both test signing and production signing processes.
+Instructions for running the driver in both test mode and production mode.
+Additional resources for further learning about Windows driver development and signing.
+
+The steps for making and signing a driver have been expanded to include:
+
+Generating a test certificate for development and testing.
+Signing the driver with a test certificate.
+Information on obtaining an EV Code Signing Certificate for production signing.
+Steps for signing a driver with a production certificate.
+Mention of the WHQL certification process for production drivers.
+
+These additions provide a more comprehensive guide to the entire process of developing, signing, and deploying a Windows kernel-mode driver, from initial development through to production release.
