@@ -6,6 +6,7 @@
 #define IOCTL_MYDRIVER_READ    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)
 #define IOCTL_MYDRIVER_WRITE   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
+// TODO: Remove or disable these in production builds
 #if DBG
 #define MYDRIVER_KDPRINT(_x_) \
                 DbgPrint("MYDRIVER.SYS: ");\
@@ -63,7 +64,7 @@ DriverEntry(
         0,
         &ntUnicodeString,
         FILE_DEVICE_UNKNOWN,
-        FILE_DEVICE_SECURE_OPEN,
+        0,
         FALSE,
         &deviceObject
     );
@@ -95,7 +96,7 @@ DriverEntry(
 
     // Initialize and start the timer
     KeInitializeTimer(&g_Timer);
-    KeInitializeDpc(&g_TimerDpc, TimerDpcRoutine, NULL);
+    KeInitializeDpc(&g_TimerDpc, TimerDpcRoutine, deviceObject);
     LARGE_INTEGER dueTime;
     dueTime.QuadPart = -10000000LL; // 1 second
     KeSetTimerEx(&g_Timer, dueTime, 1000, &g_TimerDpc); // 1 second periodic
@@ -112,6 +113,7 @@ MyDriverCreateClose(
 {
     UNREFERENCED_PARAMETER(DeviceObject);
 
+    // This routine should only be called at PASSIVE_LEVEL
     PAGED_CODE();
 
     MYDRIVER_KDPRINT(("Create or Close request\n"));
@@ -132,12 +134,13 @@ MyDriverUnload(
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
     UNICODE_STRING uniWin32NameString;
 
-    PAGED_CODE();
-
     MYDRIVER_KDPRINT(("Unload Called\n"));
 
     // Cancel the timer
     KeCancelTimer(&g_Timer);
+    
+    // Wait for any pending DPCs to complete
+    KeFlushQueuedDpcs();
 
     // Delete the symbolic link
     RtlInitUnicodeString(&uniWin32NameString, DOS_DEVICE_NAME);
@@ -163,6 +166,7 @@ MyDriverDeviceControl(
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
+    // This routine should only be called at PASSIVE_LEVEL
     PAGED_CODE();
 
     irpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -173,6 +177,8 @@ MyDriverDeviceControl(
 
     MYDRIVER_KDPRINT(("Device Control Request\n"));
 
+    Irp->IoStatus.Information = 0;  // Initialize to 0
+
     switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
     {
     case IOCTL_MYDRIVER_READ:
@@ -181,10 +187,12 @@ MyDriverDeviceControl(
             ntStatus = STATUS_BUFFER_TOO_SMALL;
             break;
         }
-        // Read the shared counter
-        KeAcquireSpinLock(&g_SpinLock, &irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
-        *(PLONG)outBuf = g_SharedCounter;
-        KeReleaseSpinLock(&g_SpinLock, (KIRQL)irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+        {
+            KLOCK_QUEUE_HANDLE lockHandle;
+            KeAcquireInStackQueuedSpinLock(&g_SpinLock, &lockHandle);
+            *(PLONG)outBuf = g_SharedCounter;
+            KeReleaseInStackQueuedSpinLock(&lockHandle);
+        }
         Irp->IoStatus.Information = sizeof(LONG);
         break;
 
@@ -194,11 +202,12 @@ MyDriverDeviceControl(
             ntStatus = STATUS_BUFFER_TOO_SMALL;
             break;
         }
-        // Write to the shared counter
-        KeAcquireSpinLock(&g_SpinLock, &irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
-        g_SharedCounter = *(PLONG)inBuf;
-        KeReleaseSpinLock(&g_SpinLock, (KIRQL)irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
-        Irp->IoStatus.Information = 0;
+        {
+            KLOCK_QUEUE_HANDLE lockHandle;
+            KeAcquireInStackQueuedSpinLock(&g_SpinLock, &lockHandle);
+            g_SharedCounter = *(PLONG)inBuf;
+            KeReleaseInStackQueuedSpinLock(&lockHandle);
+        }
         break;
 
     default:
@@ -224,9 +233,14 @@ TimerDpcRoutine(
 )
 {
     UNREFERENCED_PARAMETER(Dpc);
-    UNREFERENCED_PARAMETER(DeferredContext);
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
+
+    PDEVICE_OBJECT deviceObject = (PDEVICE_OBJECT)DeferredContext;
+    if (deviceObject == NULL) {
+        MYDRIVER_KDPRINT(("ERROR: Invalid device object in TimerDpcRoutine\n"));
+        return;
+    }
 
     MYDRIVER_KDPRINT(("Timer DPC Called\n"));
 
@@ -234,10 +248,14 @@ TimerDpcRoutine(
     InterlockedIncrement(&g_SharedCounter);
 
     // Queue a work item
-    PIO_WORKITEM workItem = IoAllocateWorkItem(IoGetCurrentIrpStackLocation((PIRP)SystemArgument2)->DeviceObject);
+    PIO_WORKITEM workItem = IoAllocateWorkItem(deviceObject);
     if (workItem != NULL)
     {
         IoQueueWorkItem(workItem, WorkItemRoutine, DelayedWorkQueue, workItem);
+    }
+    else
+    {
+        MYDRIVER_KDPRINT(("ERROR: Failed to allocate work item in TimerDpcRoutine\n"));
     }
 }
 
@@ -253,7 +271,16 @@ WorkItemRoutine(
     MYDRIVER_KDPRINT(("Work Item Routine Called\n"));
 
     // Perform some deferred processing here
+    // NOTE: Ensure any added processing is safe to run at DISPATCH_LEVEL or lower
+    // Avoid operations that require PASSIVE_LEVEL
 
     // Free the work item
-    IoFreeWorkItem((PIO_WORKITEM)Context);
+    if (Context != NULL)
+    {
+        IoFreeWorkItem((PIO_WORKITEM)Context);
+    }
+    else
+    {
+        MYDRIVER_KDPRINT(("ERROR: Invalid Context in WorkItemRoutine\n"));
+    }
 }
