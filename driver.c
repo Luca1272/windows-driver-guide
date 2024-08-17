@@ -3,14 +3,26 @@
 #define NT_DEVICE_NAME      L"\\Device\\MyDriver"
 #define DOS_DEVICE_NAME     L"\\DosDevices\\MyDriver"
 
+#define IOCTL_MYDRIVER_READ    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_MYDRIVER_WRITE   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
 #if DBG
 #define MYDRIVER_KDPRINT(_x_) \
                 DbgPrint("MYDRIVER.SYS: ");\
                 DbgPrint _x_;
-
 #else
 #define MYDRIVER_KDPRINT(_x_)
 #endif
+
+// Global variable
+static LONG g_SharedCounter = 0;
+
+// Spin lock for synchronization
+static KSPIN_LOCK g_SpinLock;
+
+// Timer object
+static KTIMER g_Timer;
+static KDPC g_TimerDpc;
 
 // Function declarations
 DRIVER_INITIALIZE DriverEntry;
@@ -20,6 +32,8 @@ _Dispatch_type_(IRP_MJ_CLOSE)
 DRIVER_DISPATCH MyDriverCreateClose;
 _Dispatch_type_(IRP_MJ_DEVICE_CONTROL)
 DRIVER_DISPATCH MyDriverDeviceControl;
+KDEFERRED_ROUTINE TimerDpcRoutine;
+IO_WORKITEM_ROUTINE WorkItemRoutine;
 
 // Entry point of the driver
 NTSTATUS
@@ -36,6 +50,9 @@ DriverEntry(
     UNREFERENCED_PARAMETER(RegistryPath);
 
     MYDRIVER_KDPRINT(("DriverEntry Called\n"));
+
+    // Initialize the spin lock
+    KeInitializeSpinLock(&g_SpinLock);
 
     // Initialize the Unicode string for the device name
     RtlInitUnicodeString(&ntUnicodeString, NT_DEVICE_NAME);
@@ -73,9 +90,17 @@ DriverEntry(
     {
         MYDRIVER_KDPRINT(("Couldn't create symbolic link\n"));
         IoDeleteDevice(deviceObject);
+        return ntStatus;
     }
 
-    return ntStatus;
+    // Initialize and start the timer
+    KeInitializeTimer(&g_Timer);
+    KeInitializeDpc(&g_TimerDpc, TimerDpcRoutine, NULL);
+    LARGE_INTEGER dueTime;
+    dueTime.QuadPart = -10000000LL; // 1 second
+    KeSetTimerEx(&g_Timer, dueTime, 1000, &g_TimerDpc); // 1 second periodic
+
+    return STATUS_SUCCESS;
 }
 
 // Handle create and close requests
@@ -91,7 +116,6 @@ MyDriverCreateClose(
 
     MYDRIVER_KDPRINT(("Create or Close request\n"));
 
-    // Complete the IRP with success status
     Irp->IoStatus.Status = STATUS_SUCCESS;
     Irp->IoStatus.Information = 0;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -112,11 +136,13 @@ MyDriverUnload(
 
     MYDRIVER_KDPRINT(("Unload Called\n"));
 
+    // Cancel the timer
+    KeCancelTimer(&g_Timer);
+
     // Delete the symbolic link
     RtlInitUnicodeString(&uniWin32NameString, DOS_DEVICE_NAME);
     IoDeleteSymbolicLink(&uniWin32NameString);
 
-    // Delete the device object
     if (deviceObject != NULL)
     {
         IoDeleteDevice(deviceObject);
@@ -132,18 +158,49 @@ MyDriverDeviceControl(
 {
     PIO_STACK_LOCATION irpSp;
     NTSTATUS ntStatus = STATUS_SUCCESS;
+    ULONG inBufLength, outBufLength;
+    PVOID inBuf, outBuf;
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
     PAGED_CODE();
 
     irpSp = IoGetCurrentIrpStackLocation(Irp);
+    inBufLength = irpSp->Parameters.DeviceIoControl.InputBufferLength;
+    outBufLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
+    inBuf = Irp->AssociatedIrp.SystemBuffer;
+    outBuf = Irp->AssociatedIrp.SystemBuffer;
 
     MYDRIVER_KDPRINT(("Device Control Request\n"));
 
-    // Handle the specific IOCTL codes here
     switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
     {
+    case IOCTL_MYDRIVER_READ:
+        if (outBufLength < sizeof(LONG))
+        {
+            ntStatus = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        // Read the shared counter
+        KeAcquireSpinLock(&g_SpinLock, &irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+        *(PLONG)outBuf = g_SharedCounter;
+        KeReleaseSpinLock(&g_SpinLock, (KIRQL)irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+        Irp->IoStatus.Information = sizeof(LONG);
+        break;
+
+    case IOCTL_MYDRIVER_WRITE:
+        if (inBufLength < sizeof(LONG))
+        {
+            ntStatus = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        // Write to the shared counter
+        KeAcquireSpinLock(&g_SpinLock, &irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+        g_SharedCounter = *(PLONG)inBuf;
+        KeReleaseSpinLock(&g_SpinLock, (KIRQL)irpSp->Parameters.DeviceIoControl.Type3InputBuffer);
+        Irp->IoStatus.Information = 0;
+        break;
+
     default:
         ntStatus = STATUS_INVALID_DEVICE_REQUEST;
         MYDRIVER_KDPRINT(("ERROR: Unrecognized IOCTL %x\n",
@@ -151,9 +208,52 @@ MyDriverDeviceControl(
         break;
     }
 
-    // Complete the IRP with the status
     Irp->IoStatus.Status = ntStatus;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
     return ntStatus;
+}
+
+// Timer DPC routine
+VOID
+TimerDpcRoutine(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2
+)
+{
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(DeferredContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+
+    MYDRIVER_KDPRINT(("Timer DPC Called\n"));
+
+    // Increment the shared counter
+    InterlockedIncrement(&g_SharedCounter);
+
+    // Queue a work item
+    PIO_WORKITEM workItem = IoAllocateWorkItem(IoGetCurrentIrpStackLocation((PIRP)SystemArgument2)->DeviceObject);
+    if (workItem != NULL)
+    {
+        IoQueueWorkItem(workItem, WorkItemRoutine, DelayedWorkQueue, workItem);
+    }
+}
+
+// Work item routine
+VOID
+WorkItemRoutine(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_opt_ PVOID Context
+)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    MYDRIVER_KDPRINT(("Work Item Routine Called\n"));
+
+    // Perform some deferred processing here
+
+    // Free the work item
+    IoFreeWorkItem((PIO_WORKITEM)Context);
 }
