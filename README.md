@@ -38,7 +38,7 @@ The driver demonstrates the following features:
 
 1. Device creation and symbolic link creation
 2. Handling of create/close requests
-3. IOCTL processing for read and write operations
+3. IOCTL (Input/Output Control) processing for read and write operations
 4. Use of a global variable shared across the driver
 5. Basic synchronization using a spin lock
 6. Timer and DPC (Deferred Procedure Call) usage
