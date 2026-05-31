@@ -1,18 +1,26 @@
 ;
 ; SimpleWindowsDriver.inf
 ;
+; Non-PnP software driver. It creates its own control device in DriverEntry and
+; is not bound to hardware, so install it with sc.exe (see README.md):
+;
+;     sc create SimpleWindowsDriver type= kernel binPath= C:\path\to\SimpleWindowsDriver.sys
+;     sc start  SimpleWindowsDriver
+;
+; This INF is a reference for the service-install layout.
+;
 
 [Version]
 Signature   = "$WINDOWS NT$"
-Class       = System ; TODO: specify appropriate Class
-ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318} ; TODO: specify appropriate ClassGuid
-Provider    = %Luca1272%
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
 CatalogFile = SimpleWindowsDriver.cat
-DriverVer   = ; TODO: set DriverVer in stampinf property pages
+DriverVer   = 05/31/2026,1.0.0.0
 PnpLockdown = 1
 
 [DestinationDirs]
-DefaultDestDir = 13
+DefaultDestDir = 12 ; %windir%\System32\drivers
 
 [SourceDisksNames]
 1 = %DiskName%,,,""
@@ -21,42 +29,27 @@ DefaultDestDir = 13
 SimpleWindowsDriver.sys = 1,,
 
 ;*****************************************
-; Install Section
+; Install Section (non-PnP service)
 ;*****************************************
 
-[Manufacturer]
-%ManufacturerName% = Standard,NT$ARCH$.10.0...16299 ; %13% support introduced in build 16299
-
-[Standard.NT$ARCH$.10.0...16299]
-%SimpleWindowsDriver.DeviceDesc% = SimpleWindowsDriver_Device, Root\SimpleWindowsDriver ; TODO: edit hw-id
-
-[SimpleWindowsDriver_Device.NT]
+[DefaultInstall.NT$ARCH$]
 CopyFiles = File_Copy
+
+[DefaultInstall.NT$ARCH$.Services]
+AddService = SimpleWindowsDriver,0x00000000,SimpleWindowsDriver_Service_Inst
 
 [File_Copy]
 SimpleWindowsDriver.sys
 
-;-------------- Service installation
-[SimpleWindowsDriver_Device.NT.Services]
-AddService = SimpleWindowsDriver,%SPSVCINST_ASSOCSERVICE%, SimpleWindowsDriver_Service_Inst
-
-; -------------- SimpleWindowsDriver driver install sections
+; -------------- Service installation
 [SimpleWindowsDriver_Service_Inst]
 DisplayName    = %SimpleWindowsDriver.SVCDESC%
 ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
 StartType      = 3               ; SERVICE_DEMAND_START
 ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
-ServiceBinary  = %13%\SimpleWindowsDriver.sys
-
-[SimpleWindowsDriver_Device.NT.Wdf]
-KmdfService = SimpleWindowsDriver, SimpleWindowsDriver_wdfsect
-
-[SimpleWindowsDriver_wdfsect]
-KmdfLibraryVersion = $KMDFVERSION$
+ServiceBinary  = %12%\SimpleWindowsDriver.sys
 
 [Strings]
-SPSVCINST_ASSOCSERVICE = 0x00000002
-ManufacturerName = "<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ManufacturerName = "SimpleWindowsDriver (Educational)"
 DiskName = "SimpleWindowsDriver Installation Disk"
-SimpleWindowsDriver.DeviceDesc = "SimpleWindowsDriver Device"
 SimpleWindowsDriver.SVCDESC = "SimpleWindowsDriver Service"

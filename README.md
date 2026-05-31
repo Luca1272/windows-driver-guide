@@ -1,148 +1,172 @@
-# MyDriver
+# SimpleWindowsDriver
 
-This repository contains the source code for `MyDriver`, a Windows kernel-mode driver. This guide provides detailed instructions on how to compile, test, and run your own drivers, including information on driver signing for both test and production environments.
+A small educational Windows kernel-mode (WDM) software driver. It shows the core
+pieces of a driver: creating a device, handling IOCTLs, protecting shared state
+with a spin lock, and running periodic work from a timer/DPC and a work item.
 
-## Table of Contents
-* Introduction
-* Prerequisites
-* Driver Features
-* Compiling the Driver
-   * Using Visual Studio
-   * Without Visual Studio
-* Signing the Driver
-   * Test Signing
-   * Production Signing
-* Running the Driver
-   * In Test Mode
-   * In Production Mode
-* Uninstalling the Driver
-* Additional Resources
+Run it only on a test machine or virtual machine with test signing enabled. A bug
+in kernel code can crash the whole system.
 
-## Introduction
+## Contents
 
-`MyDriver` is a Windows kernel-mode driver example that demonstrates several basic features commonly used in drivers. It includes device creation, IOCTL handling, timer usage, work item implementation, and basic synchronization. This driver is a simple example of how to handle IOCTL commands, manage shared data in a thread-safe manner, and perform periodic tasks within a Windows kernel-mode environment. It serves as a foundation for more complex drivers that might involve additional hardware interaction or more sophisticated data processing.
+- [What it does](#what-it-does)
+- [Repository layout](#repository-layout)
+- [Prerequisites](#prerequisites)
+- [Building](#building)
+- [Signing](#signing)
+- [Running](#running)
+- [Test app](#test-app)
+- [Uninstalling](#uninstalling)
+
+## What it does
+
+The driver keeps a single shared counter:
+
+- A kernel timer fires roughly once a second, increments the counter in a DPC, and
+  queues a work item that runs at `PASSIVE_LEVEL`.
+- A spin lock guards every access to the counter so the timer, work item, and
+  IOCTL handlers serialize on it.
+- Four IOCTLs let a user-mode app operate on the counter:
+  - `IOCTL_SWD_READ` - read the value
+  - `IOCTL_SWD_WRITE` - set the value
+  - `IOCTL_SWD_RESET` - set it to 0
+  - `IOCTL_SWD_INCREMENT` - increment and return the new value
+- On unload the driver cancels the timer, flushes queued DPCs, and waits for any
+  in-flight work items before deleting the device.
+
+This is raw WDM so the primitives are visible. For new production drivers, KMDF is
+the framework to learn next.
+
+## Repository layout
+
+| File | Purpose |
+| --- | --- |
+| `driver.c` | Kernel-mode driver source. |
+| `test_app.c` | User-mode console app that drives the IOCTLs. |
+| `SimpleWindowsDriver.inf` | Reference INF. `sc.exe` is the preferred install path. |
+| `Simple Windows Driver.vcxproj` / `.sln` | Visual Studio / WDK project. |
+| `build.ps1` | Build / install / start / stop / uninstall helper. |
 
 ## Prerequisites
 
-To compile and run this driver, you need the following tools and dependencies:
+- Windows 10 or 11 (a test machine or VM).
+- Visual Studio 2022 or later with "Desktop development with C++".
+- The Windows Driver Kit (WDK) matching your Visual Studio version, plus the
+  Windows SDK and the WDK Visual Studio extension. See
+  [Download the WDK](https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk).
+- Administrator privileges to install and load the driver.
 
-* Windows 10 or later operating system
-* Windows Driver Kit (WDK) 10 or later
-* Visual Studio 2019 or later (optional but recommended)
-* Windows SDK
-* Administrator privileges to install and run the driver
+Build for x64 or ARM64.
 
-## Driver Features and How It Works
+## Building
 
-The driver demonstrates the following features:
+### Visual Studio
 
-1. **Device Creation**: The driver creates a device object and a symbolic link, allowing user-mode applications to interact with the driver.
+Open `Simple Windows Driver.sln`, pick a configuration (e.g. Release | x64), and
+build. The output is `SimpleWindowsDriver.sys`.
 
-2. **IOCTL Handling**: The driver processes Input/Output Control (IOCTL) requests for read and write operations on a shared counter.
+### Command line
 
-3. **Shared Counter**: A global variable (`g_SharedCounter`) is used across the driver to demonstrate shared state.
+From the "x64 Native Tools Command Prompt for VS" (the project file name has
+spaces, so quote it):
 
-4. **Synchronization**: A spin lock (`g_SpinLock`) is used to protect access to the shared counter, ensuring thread-safe operations.
+```cmd
+msbuild "Simple Windows Driver.vcxproj" /p:Configuration=Release /p:Platform=x64
+```
 
-5. **Timer and DPC**: The driver uses a kernel timer (`g_Timer`) and a Deferred Procedure Call (DPC) to periodically increment the shared counter.
+### Helper script
 
-6. **Work Item**: A work item is queued from the DPC routine to demonstrate deferred processing at a lower IRQL.
+From an elevated PowerShell on the test machine:
 
-Here's a brief explanation of how the driver works:
+```powershell
+.\build.ps1 build
+.\build.ps1 install
+.\build.ps1 start
+.\build.ps1 stop
+.\build.ps1 uninstall
+```
 
-1. In `DriverEntry`, the driver initializes its components, creates the device, and starts the timer.
-2. The timer periodically triggers the DPC routine (`TimerDpcRoutine`).
-3. The DPC routine increments the shared counter and queues a work item.
-4. The work item (`WorkItemRoutine`) performs some processing at a lower IRQL.
-5. User-mode applications can interact with the driver through IOCTLs to read or write the shared counter.
-6. When the driver is unloaded, it cleans up all resources in the `MyDriverUnload` routine.
+## Signing
 
-## Compiling the Driver
+Windows will not load an unsigned kernel driver. For development, use a
+self-signed certificate plus test signing mode.
 
-### Using Visual Studio
+1. Create a code-signing certificate:
 
-1. Install Visual Studio and the WDK.
-2. Open Visual Studio and create a new project using the "Kernel Mode Driver, Empty (KMDF)" template.
-3. Add the `driver.c` file to the project.
-4. Configure project properties:
-   - Set the target OS version and platform.
-   - Configure the signing properties (see Signing the Driver section).
-5. Build the solution.
+   ```powershell
+   $cert = New-SelfSignedCertificate `
+       -Subject "CN=SimpleWindowsDriver Test Cert" `
+       -Type CodeSigningCert `
+       -KeyUsage DigitalSignature `
+       -CertStoreLocation "Cert:\CurrentUser\My" `
+       -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
+   ```
 
-### Without Visual Studio
-
-1. Install the WDK.
-2. Open the "x64 Native Tools Command Prompt for VS".
-3. Navigate to the directory containing `driver.c`.
-4. Compile using `msbuild`:
-msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64
-
-## Signing the Driver
-
-Driver signing is crucial for both testing and production environments. Here's a more detailed guide:
-
-### Test Signing
-
-1. Generate a test certificate:
-makecert -r -pe -ss PrivateCertStore -n CN=MyDriverTestCert MyDriverTestCert.cer
-CopyThis creates a self-signed certificate in the PrivateCertStore.
+   Import it into Trusted Root Certification Authorities and Trusted Publishers
+   on the test machine (e.g. via `certmgr.msc`).
 
 2. Sign the driver:
-signtool sign /v /s PrivateCertStore /n MyDriverTestCert /t http://timestamp.digicert.com MyDriver.sys
-CopyThis signs the driver with the test certificate and adds a timestamp.
 
-3. Enable test signing mode on your development machine:
-bcdedit /set testsigning on
-CopyRestart your computer for this change to take effect.
+   ```cmd
+   signtool sign /v /fd sha256 ^
+       /s My /n "SimpleWindowsDriver Test Cert" ^
+       /tr http://timestamp.digicert.com /td sha256 ^
+       x64\Release\SimpleWindowsDriver\SimpleWindowsDriver.sys
+   ```
 
-### Production Signing
+3. Enable test signing and reboot:
 
-1. Obtain an Extended Validation (EV) Code Signing Certificate from a trusted Certificate Authority (CA) like DigiCert, GlobalSign, or Sectigo.
+   ```cmd
+   bcdedit /set testsigning on
+   ```
 
-2. Install the certificate on your development machine:
-- Double-click the certificate file (.pfx)
-- Follow the Certificate Import Wizard
-- Ensure you select "Place all certificates in the following store" and choose "Personal"
+For distribution, a kernel driver must be signed by Microsoft through
+[Partner Center](https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/),
+which requires a registered hardware developer account and an EV code-signing
+certificate.
 
-3. Sign the driver using the production certificate:
-signtool sign /v /fd sha256 /s MY /n "Your Company Name" /t http://timestamp.digicert.com MyDriver.sys
-CopyReplace "Your Company Name" with the exact name on your certificate.
+## Running
 
-4. Submit the driver to the Windows Hardware Developer Center for WHQL certification:
-- Go to the [Windows Hardware Dev Center Dashboard](https://partner.microsoft.com/en-us/dashboard/hardware/)
-- Create a new submission for your driver
-- Upload your signed driver and complete the submission process
-- Microsoft will test your driver and, if it passes, provide you with a WHQL-signed version
+On the test machine, from an elevated command prompt (the spaces after `type=`
+and `binPath=` are required by `sc.exe`):
 
-## Running the Driver
+```cmd
+sc create SimpleWindowsDriver type= kernel binPath= C:\path\to\SimpleWindowsDriver.sys
+sc start  SimpleWindowsDriver
+```
 
-### In Test Mode
+Debug-build output from `SWD_KDPRINT` shows up in a kernel debugger or in DebugView
+with "Capture Kernel" enabled.
 
-1. Enable test signing mode:
-bcdedit /set testsigning on
-2. Restart your computer.
-3. Install the driver:
-sc create MyDriver type= kernel binPath= C:\path\to\MyDriver.sys
-sc start MyDriver
+## Test app
 
-### In Production Mode
+Build `test_app.c` from a Developer Command Prompt:
 
-1. Ensure you have a WHQL certified driver.
-2. Install the driver using the same method as in test mode, but without enabling test signing.
+```cmd
+cl /W4 /Fe:test_app.exe test_app.c
+```
 
-## Uninstalling the Driver
+With the driver running:
 
-1. Stop the driver:
-sc stop MyDriver
-2. Delete the driver service:
-sc delete MyDriver
-3. If in test mode, disable it:
+```cmd
+test_app.exe            :: demo sequence
+test_app.exe read       :: print the counter
+test_app.exe write 42   :: set the counter
+test_app.exe reset      :: zero the counter
+test_app.exe inc        :: increment and print the new value
+```
+
+Run `test_app.exe read` a few times to watch the timer increment the counter.
+
+## Uninstalling
+
+```cmd
+sc stop   SimpleWindowsDriver
+sc delete SimpleWindowsDriver
+```
+
+To turn off test signing afterward:
+
+```cmd
 bcdedit /set testsigning off
-
-## Additional Resources
-
-* [Microsoft Docs: Windows Driver Kit](https://docs.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk)
-* [Microsoft Docs: Driver Signing](https://docs.microsoft.com/en-us/windows-hardware/drivers/install/driver-signing)
-* [Windows Hardware Dev Center Dashboard](https://partner.microsoft.com/en-us/dashboard/hardware/)
-
-For any questions or issues, please open an issue on the GitHub repository.
+```
